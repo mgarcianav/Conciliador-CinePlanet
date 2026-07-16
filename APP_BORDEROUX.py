@@ -71,6 +71,18 @@ def procesar_excel_dinamico(file_bytes, nombre_archivo):
     idx_admis = 17
     idx_gbo = 18
 
+    # Mapeo de columnas de ingresos diarios en el Borderoux (GBO)
+    # 2: Jue, 4: Vie, 6: Sab, 8: Dom, 12: Lun, 14: Mar, 16: Mie
+    fechas_mapeo = {
+        "2026-07-09": 2,
+        "2026-07-10": 4,
+        "2026-07-11": 6,
+        "2026-07-12": 8,
+        "2026-07-13": 12,
+        "2026-07-14": 14,
+        "2026-07-15": 16
+    }
+
     for idx, row in df_raw.iterrows():
         if pd.isna(row.iloc[0]):
             continue
@@ -115,6 +127,14 @@ def procesar_excel_dinamico(file_bytes, nombre_archivo):
                 sem_admis = 0
                 sem_gbo = 0
 
+            # Extraemos desglose de GBO diario
+            gbo_diario = {}
+            for f_str, col_idx in fechas_mapeo.items():
+                try:
+                    gbo_diario[f_str] = limpiar_monto_numerico(row.iloc[col_idx])
+                except:
+                    gbo_diario[f_str] = 0
+
             data_rows.append(
                 {
                     "Pelicula": current_movie_es.upper(),
@@ -122,6 +142,7 @@ def procesar_excel_dinamico(file_bytes, nombre_archivo):
                     "Sala": str(sala) if sala else "NE",
                     "Admisiones_Borderoux": sem_admis,
                     "GBO_Borderoux": sem_gbo,
+                    "GBO_Diario_A": gbo_diario
                 }
             )
 
@@ -162,6 +183,8 @@ if "df_borderoux" not in st.session_state:
     st.session_state.df_borderoux = None
 if "df_fuente_b" not in st.session_state:
     st.session_state.df_fuente_b = None
+if "df_fuente_b_detalle" not in st.session_state:
+    st.session_state.df_fuente_b_detalle = None
 if "resultados_cruce" not in st.session_state:
     st.session_state.resultados_cruce = None
 
@@ -187,27 +210,39 @@ with tab_borderoux:
                     st.error(f"Error en {arc.name}: {e}")
 
             if listado_dfs:
+                # Al consolidar Borderoux agrupamos, pero conservamos los diccionarios diarios sumándolos si se repitieran
                 df_consolidado_a = pd.concat(listado_dfs, ignore_index=True)
-                df_consolidado_a = (
-                    df_consolidado_a.groupby(["Pelicula", "Cine", "Sala"])
-                    .sum()
-                    .reset_index()
-                )
+                
+                # Para evitar duplicar lógica compleja, hacemos un groupby personalizado para los diccionarios
+                def combinar_gbo_diarios(series):
+                    consolidado = {}
+                    for d in series:
+                        if isinstance(d, dict):
+                            for k, v in d.items():
+                                consolidado[k] = consolidado.get(k, 0) + v
+                    return consolidado
+
+                df_consolidado_a = df_consolidado_a.groupby(["Pelicula", "Cine", "Sala"]).agg({
+                    "Admisiones_Borderoux": "sum",
+                    "GBO_Borderoux": "sum",
+                    "GBO_Diario_A": combinar_gbo_diarios
+                }).reset_index()
+
                 st.session_state.df_borderoux = df_consolidado_a
                 st.success(
                     f"¡Fuente A lista! Registros estructurados totales: {len(df_consolidado_a)}"
                 )
-                st.dataframe(df_consolidado_a, use_container_width=True)
+                st.dataframe(df_consolidado_a.drop(columns=["GBO_Diario_A"], errors="ignore"), use_container_width=True)
 
-# --- PESTAÑA 2: FUENTE B (MODIFICADO PARA MÚLTIPLES ARCHIVOS) ---
+# --- PESTAÑA 2: FUENTE B (CONSOLIDADO Y DETALLE DIARIO) ---
 with tab_fuente_b:
     st.subheader("Carga de reportes consolidados externos")
-    st.caption("Estructura de columnas soportada: PELÍCULA, CINE, NRO SALA, ADMITS, GROSS TOTAL")
+    st.caption("Debe contener las pestañas 'CONSOLIDADO' y 'DETALLE'. Estructura soportada: PELÍCULA, CINE, NRO SALA, ADMITS, GROSS TOTAL")
 
     archivos_b = st.file_uploader(
         "Sube uno o varios archivos Excel de la segunda fuente (Consolidados)",
         type=["xlsx", "xls"],
-        accept_multiple_files=True,  # PERMITE CARGAR MÁS DE UN ARCHIVO
+        accept_multiple_files=True,
         key="uploader_b",
     )
 
@@ -216,10 +251,15 @@ with tab_fuente_b:
 
         if st.button("📌 Procesar e indexar Fuente B Masiva"):
             listado_dfs_b = []
+            listado_dfs_b_detalle = []
             
             for arc_b in archivos_b:
                 try:
-                    df_b_raw = pd.read_excel(arc_b)
+                    # Intentamos leer la pestaña CONSOLIDADO si existe, sino leemos la primera
+                    xls = pd.ExcelFile(arc_b)
+                    sheet_consolidado = "CONSOLIDADO" if "CONSOLIDADO" in [s.upper() for s in xls.sheet_names] else xls.sheet_names[0]
+                    
+                    df_b_raw = pd.read_excel(xls, sheet_name=sheet_consolidado)
                     df_b_raw.columns = [str(c).strip().upper() for c in df_b_raw.columns]
 
                     if "PELÍCULA" in df_b_raw.columns and "CINE" in df_b_raw.columns:
@@ -248,13 +288,26 @@ with tab_fuente_b:
                         )
 
                         listado_dfs_b.append(df_b_final)
-                    else:
-                        st.warning(f"Columnas inválidas en el archivo '{arc_b.name}'. Saltando archivo.")
+                    
+                    # Intentamos extraer y procesar la pestaña de DETALLE diario
+                    sheet_detalle = next((s for s in xls.sheet_names if "DETALLE" in s.upper()), None)
+                    if sheet_detalle:
+                        df_b_det = pd.read_excel(xls, sheet_name=sheet_detalle)
+                        df_b_det.columns = [str(c).strip().upper() for c in df_b_det.columns]
+                        
+                        if "PELÍCULA" in df_b_det.columns and "CINE" in df_b_det.columns:
+                            df_b_det["FECHA_PARSED"] = pd.to_datetime(df_b_det["FECHA"].astype(str).str.strip(), format="%d/%m/%Y", errors='coerce')
+                            df_b_det["Pelicula"] = df_b_det["PELÍCULA"].astype(str).str.strip().str.upper()
+                            df_b_det["Cine"] = df_b_det["CINE"].astype(str).str.strip().str.upper().str.replace("CUZCO", "CUSCO")
+                            df_b_det["Sala"] = df_b_det["NRO SALA"].astype(str).str.replace(".0", "", regex=False).str.strip()
+                            df_b_det["LLAVE_CRUCE"] = df_b_det["Pelicula"] + "_" + df_b_det["Cine"] + "_S" + df_b_det["Sala"]
+                            
+                            listado_dfs_b_detalle.append(df_b_det)
+
                 except Exception as e:
                     st.error(f"Error procesando el archivo '{arc_b.name}': {e}")
 
             if listado_dfs_b:
-                # Unificar y agrupar todo el bloque de archivos de la Fuente B
                 df_consolidado_b = pd.concat(listado_dfs_b, ignore_index=True)
                 df_consolidado_b = (
                     df_consolidado_b.groupby(["Pelicula", "Cine", "Sala"])
@@ -264,16 +317,18 @@ with tab_fuente_b:
                 df_consolidado_b["Cine"] = df_consolidado_b["Cine"].str.replace("CUZCO", "CUSCO")
 
                 st.session_state.df_fuente_b = df_consolidado_b
+                
+                if listado_dfs_b_detalle:
+                    st.session_state.df_fuente_b_detalle = pd.concat(listado_dfs_b_detalle, ignore_index=True)
+
                 st.success(
-                    f"¡Fuente B consolidada con éxito! Registros estructurados totales: {len(df_consolidado_b)}"
+                    f"¡Fuente B consolidada! Registros acumulados: {len(df_consolidado_b)} (Detalles diarios indexados: {len(st.session_state.df_fuente_b_detalle) if st.session_state.df_fuente_b_detalle is not None else 0})"
                 )
                 st.dataframe(df_consolidado_b, use_container_width=True)
-            else:
-                st.error("No se pudo extraer información válida de ningún archivo cargado en Fuente B.")
 
-# --- PESTAÑA 3: COMPARATIVO MODULAR CON MÉTRICAS Y VISTA PREVIA ---
+# --- PESTAÑA 3: COMPARATIVO MODULAR ---
 with tab_comparativo:
-    st.subheader("Cruce y Auditoría Automatizada")
+    st.subheader("Cruce y Auditoría Automatizada con Análisis Diario")
 
     if st.session_state.df_borderoux is not None and st.session_state.df_fuente_b is not None:
         df_a = st.session_state.df_borderoux.copy()
@@ -285,9 +340,11 @@ with tab_comparativo:
         fecha_actual = datetime.now().strftime("%d%b%Y").upper()
 
         if st.button("🔍 Correr Análisis de Conciliación"):
-            with st.spinner("Comparando registros llave a llave..."):
+            with st.spinner("Comparando registros llave a llave y detectando diferencias por fecha..."):
                 todas_peliculas = pd.concat([df_a["Pelicula"], df_b["Pelicula"]]).unique()
                 diccionario_resultados = {}
+
+                df_b_detalle = st.session_state.df_fuente_b_detalle
 
                 for pelicula in todas_peliculas:
                     sub_a = df_a[df_a["Pelicula"] == pelicula]
@@ -305,10 +362,10 @@ with tab_comparativo:
                     df_merge["Cine"] = df_merge["Cine_A"].fillna(df_merge["Cine_B"])
                     df_merge["Sala"] = df_merge["Sala_A"].fillna(df_merge["Sala_B"])
 
-                    df_merge["Admisiones_Borderoux"] = df_merge["Admisiones_Borderoux"].fillna(0)
-                    df_merge["GBO_Borderoux"] = df_merge["GBO_Borderoux"].fillna(0)
-                    df_merge["Admisiones_FuenteB"] = df_merge["Admisiones_FuenteB"].fillna(0)
-                    df_merge["GBO_FuenteB"] = df_merge["GBO_FuenteB"].fillna(0)
+                    df_merge["Admisiones_Borderoux"] = df_merge["Admisiones_Borderoux"].fillna(0).astype(int)
+                    df_merge["GBO_Borderoux"] = df_merge["GBO_Borderoux"].fillna(0).astype(int)
+                    df_merge["Admisiones_FuenteB"] = df_merge["Admisiones_FuenteB"].fillna(0).astype(int)
+                    df_merge["GBO_FuenteB"] = df_merge["GBO_FuenteB"].fillna(0).astype(int)
 
                     # MATCH PERFECTO
                     cond_match = (
@@ -319,7 +376,7 @@ with tab_comparativo:
                     )
                     df_match = df_merge[cond_match][["Cine", "Sala", "Admisiones_Borderoux", "GBO_Borderoux"]]
 
-                    # DIFERENCIAS NUMÉRICAS
+                    # DIFERENCIAS NUMÉRICAS Y ANÁLISIS DÍA A DÍA
                     cond_dif = (
                         (df_merge["Pelicula_A"].notna())
                         & (df_merge["Pelicula_B"].notna())
@@ -329,13 +386,44 @@ with tab_comparativo:
                         )
                     )
                     df_diferencias = df_merge[cond_dif].copy()
+                    
                     if not df_diferencias.empty:
                         df_diferencias["Dif_Admisiones"] = (
                             df_diferencias["Admisiones_Borderoux"] - df_diferencias["Admisiones_FuenteB"]
-                        )
+                        ).astype(int)
                         df_diferencias["Dif_GBO"] = (
                             df_diferencias["GBO_Borderoux"] - df_diferencias["GBO_FuenteB"]
-                        )
+                        ).astype(int)
+                        
+                        observaciones_diarias = []
+                        for idx_dif, row_dif in df_diferencias.iterrows():
+                            llave = row_dif["LLAVE_CRUCE"]
+                            gbo_diario_a = row_dif["GBO_Diario_A"] if isinstance(row_dif["GBO_Diario_A"], dict) else {}
+                            
+                            fechas_con_diferencia = []
+                            
+                            # Si tenemos cargado el detalle de Fuente B, cruzamos fecha por fecha
+                            if df_b_detalle is not None and not df_b_detalle.empty:
+                                detalle_b = df_b_detalle[df_b_detalle["LLAVE_CRUCE"] == llave]
+                                
+                                for f_str, gbo_a in gbo_diario_a.items():
+                                    f_dt = pd.to_datetime(f_str)
+                                    reg_b = detalle_b[detalle_b["FECHA_PARSED"] == f_dt]
+                                    gbo_b = int(float(str(reg_b["GROSS TOTAL"].values[0]).replace(",","").strip())) if not reg_b.empty else 0
+                                    
+                                    # Filtro por redondeo superior a S/. 1.00
+                                    if abs(gbo_a - gbo_b) > 1:
+                                        f_label = f_dt.strftime('%d-%b')
+                                        fechas_con_diferencia.append(f"{f_label} (A: S/. {gbo_a:,} vs B: S/. {gbo_b:,})")
+                                        
+                            if fechas_con_diferencia:
+                                obs_text = "Diferencias en fechas: " + ", ".join(fechas_con_diferencia)
+                            else:
+                                obs_text = "Diferencia acumulada menor o por redondeo de decimales."
+                            
+                            observaciones_diarias.append(obs_text)
+                        
+                        df_diferencias["OBSERVACIONES"] = observaciones_diarias
                         df_diferencias = df_diferencias[
                             [
                                 "Cine",
@@ -346,6 +434,7 @@ with tab_comparativo:
                                 "GBO_Borderoux",
                                 "GBO_FuenteB",
                                 "Dif_GBO",
+                                "OBSERVACIONES"
                             ]
                         ]
 
@@ -365,7 +454,7 @@ with tab_comparativo:
                     }
 
                 st.session_state.resultados_cruce = diccionario_resultados
-                st.success("¡Datos cruzados en memoria listos para previsualizar!")
+                st.success("¡Datos cruzados con auditoría de desglose diario listos!")
 
         # --- SECCIÓN VISUAL DEL DASHBOARD ---
         if st.session_state.resultados_cruce is not None:
