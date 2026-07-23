@@ -71,8 +71,6 @@ def procesar_excel_dinamico(file_bytes, nombre_archivo):
     idx_admis = 17
     idx_gbo = 18
 
-    # Mapeo de columnas de ingresos diarios en el Borderoux (GBO)
-    # 2: Jue, 4: Vie, 6: Sab, 8: Dom, 12: Lun, 14: Mar, 16: Mie
     fechas_mapeo = {
         "2026-07-09": 2,
         "2026-07-10": 4,
@@ -127,7 +125,6 @@ def procesar_excel_dinamico(file_bytes, nombre_archivo):
                 sem_admis = 0
                 sem_gbo = 0
 
-            # Extraemos desglose de GBO diario
             gbo_diario = {}
             for f_str, col_idx in fechas_mapeo.items():
                 try:
@@ -232,7 +229,7 @@ with tab_borderoux:
                 )
                 st.dataframe(df_consolidado_a.drop(columns=["GBO_Diario_A"], errors="ignore"), use_container_width=True)
 
-# --- PESTAÑA 2: FUENTE B (CONSOLIDADO Y DETALLE DIARIO) ---
+# --- PESTAÑA 2: FUENTE B ---
 with tab_fuente_b:
     st.subheader("Carga de reportes consolidados externos")
     st.caption("Debe contener las pestañas 'CONSOLIDADO' y 'DETALLE'. Estructura soportada: PELÍCULA, CINE, NRO SALA, ADMITS, GROSS TOTAL")
@@ -399,21 +396,28 @@ with tab_comparativo:
                             fechas_con_diferencia = []
                             
                             if df_b_detalle is not None and not df_b_detalle.empty:
-                                detalle_b = df_b_detalle[df_b_detalle["LLAVE_CRUCE"] == llave]
+                                detalle_b = df_b_detalle[df_b_detalle["LLAVE_CRUCE"] == llave].copy()
+                                # Conversión explícita a string (Formato ISO YYYY-MM-DD) para asegurar match perfecto
+                                detalle_b["FECHA_STR"] = detalle_b["FECHA_PARSED"].dt.strftime('%Y-%m-%d')
                                 
                                 for f_str, gbo_a in gbo_diario_a.items():
-                                    f_dt = pd.to_datetime(f_str)
-                                    reg_b = detalle_b[detalle_b["FECHA_PARSED"] == f_dt]
-                                    gbo_b = int(float(str(reg_b["GROSS TOTAL"].values[0]).replace(",","").strip())) if not reg_b.empty else 0
+                                    reg_b = detalle_b[detalle_b["FECHA_STR"] == f_str]
+                                    
+                                    gbo_b = 0
+                                    if not reg_b.empty:
+                                        try:
+                                            gbo_b = int(float(str(reg_b["GROSS TOTAL"].values[0]).replace(",","").strip()))
+                                        except ValueError:
+                                            gbo_b = 0
                                     
                                     if abs(gbo_a - gbo_b) > 1:
-                                        f_label = f_dt.strftime('%d-%b')
+                                        f_label = pd.to_datetime(f_str).strftime('%d-%b')
                                         fechas_con_diferencia.append(f"{f_label} (A: S/. {gbo_a:,} vs B: S/. {gbo_b:,})")
                                         
                             if fechas_con_diferencia:
                                 obs_text = "Diferencias en fechas: " + ", ".join(fechas_con_diferencia)
                             else:
-                                obs_text = "Diferencia acumulada menor o por redondeo de decimales."
+                                obs_text = f"Diferencia acumulada en totales (Bdx: S/. {row_dif['GBO_Borderoux']:,} vs B: S/. {row_dif['GBO_FuenteB']:,}). Sin desglose diario coincidente."
                             
                             observaciones_diarias.append(obs_text)
                         
@@ -474,7 +478,6 @@ with tab_comparativo:
             c3.metric(label="❌ Faltan en Fuente B", value=f"{len(res['solo_borderoux'])} salas")
             c4.metric(label="🚨 Faltan en Borderoux", value=f"{len(res['solo_fuente_b'])} salas")
 
-            # GRILLA ANALÍTICA INTERACTIVA (VISTA PREVIA)
             st.subheader(f"📊 Vista Previa de Datos: {pelicula_seleccionada}")
             v1, v2, v3, v4 = st.tabs(
                 [
@@ -488,7 +491,6 @@ with tab_comparativo:
             with v1:
                 st.dataframe(res["match"], use_container_width=True)
             with v2:
-                # Mostrar en Streamlit la tabla de diferencias incluyendo la columna OBSERVACIONES con las fechas exactas
                 st.dataframe(res["diferencias"], use_container_width=True)
             with v3:
                 st.dataframe(res["solo_borderoux"], use_container_width=True)
@@ -504,7 +506,6 @@ with tab_comparativo:
                     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
                         datos["match"].to_excel(writer, sheet_name="MATCH PERFECTO", index=False)
                         if not datos["diferencias"].empty:
-                            # Aseguramos la exportación correcta de la columna de observaciones estructurada día por día
                             datos["diferencias"].to_excel(writer, sheet_name="DIFERENCIAS NUMÉRICAS", index=False)
                         if not datos["solo_borderoux"].empty:
                             datos["solo_borderoux"].to_excel(writer, sheet_name="SOLO EN BORDEROUX", index=False)
