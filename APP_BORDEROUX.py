@@ -397,7 +397,6 @@ with tab_comparativo:
                             
                             if df_b_detalle is not None and not df_b_detalle.empty:
                                 detalle_b = df_b_detalle[df_b_detalle["LLAVE_CRUCE"] == llave].copy()
-                                # Conversión explícita a string (Formato ISO YYYY-MM-DD) para asegurar match perfecto
                                 detalle_b["FECHA_STR"] = detalle_b["FECHA_PARSED"].dt.strftime('%Y-%m-%d')
                                 
                                 for f_str, gbo_a in gbo_diario_a.items():
@@ -417,7 +416,10 @@ with tab_comparativo:
                             if fechas_con_diferencia:
                                 obs_text = "Diferencias en fechas: " + ", ".join(fechas_con_diferencia)
                             else:
-                                obs_text = f"Diferencia acumulada en totales (Bdx: S/. {row_dif['GBO_Borderoux']:,} vs B: S/. {row_dif['GBO_FuenteB']:,}). Sin desglose diario coincidente."
+                                # MEJORA AQUÍ: Si no hay cruce en DETALLE pero los totales difieren, extrae los días con taquilla activa en Borderoux para mostrarlos.
+                                dias_activos = [pd.to_datetime(f).strftime('%d-%b') for f, v in gbo_diario_a.items() if v > 0]
+                                f_rango = ", ".join(dias_activos) if dias_activos else "Rango cargado"
+                                obs_text = f"Diferencia en Fechas [{f_rango}] -> Acumulado Total difiere (Bdx: S/. {row_dif['GBO_Borderoux']:,} vs Fuente B: S/. {row_dif['GBO_FuenteB']:,})."
                             
                             observaciones_diarias.append(obs_text)
                         
