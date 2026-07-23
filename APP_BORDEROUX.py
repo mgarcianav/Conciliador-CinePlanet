@@ -210,10 +210,8 @@ with tab_borderoux:
                     st.error(f"Error en {arc.name}: {e}")
 
             if listado_dfs:
-                # Al consolidar Borderoux agrupamos, pero conservamos los diccionarios diarios sumándolos si se repitieran
                 df_consolidado_a = pd.concat(listado_dfs, ignore_index=True)
                 
-                # Para evitar duplicar lógica compleja, hacemos un groupby personalizado para los diccionarios
                 def combinar_gbo_diarios(series):
                     consolidado = {}
                     for d in series:
@@ -255,7 +253,6 @@ with tab_fuente_b:
             
             for arc_b in archivos_b:
                 try:
-                    # Intentamos leer la pestaña CONSOLIDADO si existe, sino leemos la primera
                     xls = pd.ExcelFile(arc_b)
                     sheet_consolidado = "CONSOLIDADO" if "CONSOLIDADO" in [s.upper() for s in xls.sheet_names] else xls.sheet_names[0]
                     
@@ -289,7 +286,6 @@ with tab_fuente_b:
 
                         listado_dfs_b.append(df_b_final)
                     
-                    # Intentamos extraer y procesar la pestaña de DETALLE diario
                     sheet_detalle = next((s for s in xls.sheet_names if "DETALLE" in s.upper()), None)
                     if sheet_detalle:
                         df_b_det = pd.read_excel(xls, sheet_name=sheet_detalle)
@@ -402,7 +398,6 @@ with tab_comparativo:
                             
                             fechas_con_diferencia = []
                             
-                            # Si tenemos cargado el detalle de Fuente B, cruzamos fecha por fecha
                             if df_b_detalle is not None and not df_b_detalle.empty:
                                 detalle_b = df_b_detalle[df_b_detalle["LLAVE_CRUCE"] == llave]
                                 
@@ -411,7 +406,6 @@ with tab_comparativo:
                                     reg_b = detalle_b[detalle_b["FECHA_PARSED"] == f_dt]
                                     gbo_b = int(float(str(reg_b["GROSS TOTAL"].values[0]).replace(",","").strip())) if not reg_b.empty else 0
                                     
-                                    # Filtro por redondeo superior a S/. 1.00
                                     if abs(gbo_a - gbo_b) > 1:
                                         f_label = f_dt.strftime('%d-%b')
                                         fechas_con_diferencia.append(f"{f_label} (A: S/. {gbo_a:,} vs B: S/. {gbo_b:,})")
@@ -494,6 +488,7 @@ with tab_comparativo:
             with v1:
                 st.dataframe(res["match"], use_container_width=True)
             with v2:
+                # Mostrar en Streamlit la tabla de diferencias incluyendo la columna OBSERVACIONES con las fechas exactas
                 st.dataframe(res["diferencias"], use_container_width=True)
             with v3:
                 st.dataframe(res["solo_borderoux"], use_container_width=True)
@@ -509,6 +504,7 @@ with tab_comparativo:
                     with pd.ExcelWriter(excel_buffer, engine="openpyxl") as writer:
                         datos["match"].to_excel(writer, sheet_name="MATCH PERFECTO", index=False)
                         if not datos["diferencias"].empty:
+                            # Aseguramos la exportación correcta de la columna de observaciones estructurada día por día
                             datos["diferencias"].to_excel(writer, sheet_name="DIFERENCIAS NUMÉRICAS", index=False)
                         if not datos["solo_borderoux"].empty:
                             datos["solo_borderoux"].to_excel(writer, sheet_name="SOLO EN BORDEROUX", index=False)
